@@ -4275,6 +4275,21 @@ struct MetricsTests {
                     layout: .month, category: .image, date: whatsNow,
                     calendar: utcCalendar) == ["2026", "07"],
                "the organizer produces stable flat, type and month folder layouts")
+        let volumeA = NSData(bytes: [0x67, 0x45, 0x64, 0x00] as [UInt8], length: 4)
+        let volumeB = NSData(bytes: [0x69, 0x98, 0x66, 0x00] as [UInt8], length: 4)
+        expect(WhatsAppDownloadSupport.isSameVolume(
+                    source: volumeA,
+                    destination: NSData(bytes: [0x67, 0x45, 0x64, 0x00] as [UInt8], length: 4)),
+               "two equal volume identifiers are one volume even as separate objects")
+        expect(!WhatsAppDownloadSupport.isSameVolume(source: volumeA, destination: volumeB),
+               "two different volume identifiers never skip the destination check")
+        expect(!WhatsAppDownloadSupport.isSameVolume(source: NSNumber(value: 1),
+                                                     destination: NSString(string: "1")),
+               "unequal identities that print the same string still take the verified path")
+        expect(!WhatsAppDownloadSupport.isSameVolume(source: volumeA, destination: nil)
+                && !WhatsAppDownloadSupport.isSameVolume(source: nil, destination: volumeB)
+                && !WhatsAppDownloadSupport.isSameVolume(source: nil, destination: nil),
+               "an unknown volume identity keeps the verified copy rather than an unchecked rename")
         expect(WhatsAppDownloadSupport.nextAutomaticCheck(
                     after: scheduleDate(20, 8, 0), calendar: utcCalendar) == scheduleDate(20, 9, 0)
                 && WhatsAppDownloadSupport.nextAutomaticCheck(
@@ -4721,6 +4736,47 @@ struct MetricsTests {
                && UninstallerSupport.fileIdentity(at: safeFile) != originalFileIdentity,
                "removal stays inside its scan root, rejects symlink escapes and detects path replacement")
         try? FileManager.default.removeItem(at: safetyFixture)
+        func sourceBody(of source: String, from opening: String, to closing: String) -> String {
+            guard let start = source.range(of: opening),
+                  let end = source.range(of: closing, range: start.upperBound..<source.endIndex)
+            else { return "" }
+            return String(source[start.upperBound..<end.lowerBound])
+        }
+        // Building the installed-apps oracle walks the application folders, and
+        // the removal guard reads it under `.leftovers` alone — with leftover
+        // rows unchecked by default, the common clean must not pay for that
+        // walk. JunkCleaner is not part of this test binary, so pin the gate
+        // and the premise that makes an empty oracle safe at their source.
+        let junkCleanerSource = (try? String(
+            contentsOfFile: "Sources/Vorssaint/Services/Cleaner/JunkCleaner.swift",
+            encoding: .utf8)) ?? ""
+        let cleanSelectedBody = sourceBody(of: junkCleanerSource, from: "func cleanSelected()",
+                                           to: "private static func mayRemove")
+        expect(cleanSelectedBody.contains("chosen.contains { $0.category == .leftovers }")
+               && cleanSelectedBody.contains("? Self.installedBundleIDs() : []")
+               && !cleanSelectedBody.contains("let installed = Self.installedBundleIDs()"),
+               "a clean builds the installed-apps oracle only when a leftover row is selected")
+        let mayRemoveBody = sourceBody(of: junkCleanerSource, from: "private static func mayRemove",
+                                       to: "private static func trashViaFinder")
+        let leftoverBranch = mayRemoveBody.range(of: "if item.category == .leftovers")
+        expect(mayRemoveBody.components(separatedBy: "installed: installed").count == 2,
+               "the removal guard consults the installed-apps oracle exactly once")
+        expect(leftoverBranch.map { branch in
+                   mayRemoveBody.range(of: "installed: installed",
+                                       range: branch.upperBound..<mayRemoveBody.endIndex) != nil
+               } == true,
+               "the removal guard reads the installed-apps oracle inside its leftovers branch")
+        // The known-application roster opens every installed app, and only the
+        // shared-data claims read it. AppUninstaller is not part of this test
+        // binary either, so pin the gate that keeps a removal that cannot claim
+        // shared data from paying for the roster.
+        let appUninstallerSource = (try? String(
+            contentsOfFile: "Sources/Vorssaint/Services/Uninstall/AppUninstaller.swift",
+            encoding: .utf8)) ?? ""
+        let removeSelectedBody = sourceBody(of: appUninstallerSource, from: "func removeSelected()",
+                                            to: "func removeSelectedWithHomebrew()")
+        expect(removeSelectedBody.contains("let knownApplications = mayClaimSharedData"),
+               "a removal builds the known-application roster only when it may claim shared data")
         expect(CleanerSupport.bundleIDCandidate(fromEntryName: "com.vendor.editor.prefPane")
                 == "com.vendor.editor",
                "preference panes map to their owning bundle identifier")
@@ -5136,6 +5192,23 @@ struct MetricsTests {
         }
         expect(missingWindowWatchRetryCode.isEmpty,
                "the AutoQuit window-watch retry stays bounded, origin-based, re-armed by Space changes, and counts only windows whose destroy notification registered: missing \(missingWindowWatchRetryCode)")
+        // Coalescing is only safe while the state it reads is torn down with
+        // the app: a refresh left pending for a detached app would run against
+        // an observer that is gone.
+        let refreshCoalescingCode = [
+            "guard pendingRefreshes.insert(pid).inserted else { return }",
+            "self.pendingRefreshes.remove(pid) != nil",
+            "pendingRefreshes.removeAll()",
+        ]
+        let missingRefreshCoalescingCode = refreshCoalescingCode.filter {
+            autoQuitServiceCodeLines(containing: $0).isEmpty
+        }
+        expect(missingRefreshCoalescingCode.isEmpty,
+               "AutoQuit collapses a burst of notifications into one refresh and drops it when the app goes: missing \(missingRefreshCoalescingCode)")
+        // Two lines drop the pending refresh: the deferred block's own guard
+        // and `detach`. Losing the second is the case this counts.
+        expect(autoQuitServiceCodeLines(containing: "pendingRefreshes.remove(pid)").count == 2,
+               "a pending AutoQuit refresh is dropped both when it runs and when the app is detached")
         let closeCheckOffsetCode = [
             "private static let closeCheckOffsets: [TimeInterval] = [0.35, 1.0, 2.2]",
             "for offset in Self.closeCheckOffsets",
@@ -13434,6 +13507,23 @@ struct MetricsTests {
                     superKeyModifiers: [.control, .option, .command]) == nil,
                "the shortcut editor follows the configured Super key modifiers")
 
+        // MARK: Super key held-key watchdog
+        // The source key (F18) does not autorepeat, so a steadily-held key
+        // reaches the watchdog just like a lost release. The physical key state
+        // is what tells them apart.
+        expect(SuperKeySupport.heldKeyWatchdogOutcome(physicalKeyDown: true, stateThinksHeld: true, tapAlive: true)
+                == .reArm,
+               "a key still physically down keeps the hold alive")
+        expect(SuperKeySupport.heldKeyWatchdogOutcome(physicalKeyDown: false, stateThinksHeld: true, tapAlive: true)
+                == .forget,
+               "a key that has come up ends the hold (its release was missed)")
+        expect(SuperKeySupport.heldKeyWatchdogOutcome(physicalKeyDown: true, stateThinksHeld: false, tapAlive: true)
+                == .forget,
+               "nothing to keep alive once the state is no longer held")
+        expect(SuperKeySupport.heldKeyWatchdogOutcome(physicalKeyDown: true, stateThinksHeld: true, tapAlive: false)
+                == .forget,
+               "a torn-down tap cannot stamp modifiers, so the hold is dropped")
+
         // MARK: Features hub strings
 
         for language in AppLanguage.allCases {
@@ -13594,6 +13684,17 @@ struct MetricsTests {
                 == "Thu Aug 27 10:20:30 2026"
                && KillProcessSupport.normalizedStartDescription("bad'; kill 1") == nil,
                "Kill Process accepts only safe normalized start identities for the admin command")
+        // pid 1 -> 10 -> {20, 21} -> 30, with 40 on an unrelated branch, 50
+        // its own parent and 21 <-> 22 pointing at each other.
+        let processTable: [(pid: pid_t, ppid: pid_t)] = [
+            (10, 1), (20, 10), (21, 10), (30, 20), (40, 1), (50, 50), (22, 21), (21, 22),
+        ]
+        let treeBelowTen = KillProcessSupport.descendants(of: 10, parents: processTable)
+        expect(treeBelowTen == [20, 21, 30, 22],
+               "Kill Process collects a whole process tree breadth first so the caller kills deepest first")
+        expect(KillProcessSupport.descendants(of: 30, parents: processTable).isEmpty
+               && KillProcessSupport.descendants(of: 50, parents: processTable).isEmpty,
+               "Kill Process reports no descendants for a leaf and never follows a self-parenting row")
 
         for language in AppLanguage.allCases {
             let categoryValues = Mirror(reflecting: FeatureStrings.settingsCategories(language)).children

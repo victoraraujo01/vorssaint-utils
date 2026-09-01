@@ -40,8 +40,14 @@ Vorssaint adds quit and close protections, expands screen text recognition, capt
 - App Updates now finds newer versions for other installed apps through a privacy-preserving public online catalog and opens those apps so their own updater remains in control.
 - The Uninstaller now finds more support files, containers, preference panes and plugins through verified app identifiers and signed ownership, searches nested vendor folders and opens every result in Finder. Name-related finds start unchecked.
 - Cleaner leftover scans now cover more preference panes and plugin folders while refusing nested app data, version folders, links and other ambiguous paths.
+- Quit on close now reads an app's windows once per switch instead of repeating the same scan for every focus change, so switching between apps with many windows costs less. Thanks to @PathGao.
+- The App Switcher and window previews now check whether an app's main and focused windows are already collected before evaluating their properties, skipping redundant Accessibility calls. Thanks to @PathGao.
+- Ending a process tree now reads the running process list once instead of looking up children process by process, so trees with many helpers close without the list stalling. Thanks to @PathGao.
+- The downloads organizer now confirms whether a file is staying on the same disk before filing it, and skips the second integrity read when the move is only a rename, so large videos are filed without being read twice. Thanks to @PathGao.
+- Cleaning now checks which apps are still installed once per run instead of once per leftover, and skips that check entirely when no leftover is selected, so a clean starts without scanning the application folders. Thanks to @PathGao.
 
 ### Fixed
+- Super key now keeps modifiers active while holding non-autorepeating source keys such as Caps Lock remapped to F18. Thanks to @victoraraujo01.
 - Dock icon window cycling now rotates only across windows on the active Space instead of switching desktops unexpectedly. Thanks to @PathGao.
 - App Switcher can explicitly replace the matching macOS app and window switcher shortcuts, with crash recovery and a windowless-app fallback. Thanks to @BenjaminD2023.
 - The clipboard history and snippet search fields now yield to input method composition, allowing candidate navigation and confirmation in Chinese, Japanese and Korean. Thanks to @PathGao.

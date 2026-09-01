@@ -5,10 +5,11 @@ import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 
-/// Jump to a Dock app by its number. Nine Carbon hotkeys on the Hyper layer
-/// (Control-Option-Command-Shift + 1…9) each activate — or launch — the app in
-/// that Dock position; with the Super key on, that layer is reached as
-/// Caps Lock + the digit. Nothing is registered while the feature is off.
+/// Jump to a Dock app by its number. Nine Carbon hotkeys on the Super key's
+/// modifier layer (its configurable set, ⌃⌥⌘⇧ by default) each activate — or
+/// launch — the app in that Dock position; with the Super key on, that layer is
+/// reached as Caps Lock + the digit. Nothing is registered while the feature is
+/// off.
 ///
 /// The digit position is read live from the Dock's Accessibility tree at the
 /// moment the key is pressed, so it always follows the Dock the user sees.
@@ -20,10 +21,6 @@ final class DockNumberSwitchService: ObservableObject {
     /// another app). Surfaced so the settings screen can say so.
     @Published private(set) var registrationFailed = false
 
-    /// The Hyper layer: the Super key's default modifier set, so a shortcut on
-    /// it is reached as "Super key + digit".
-    private static let hyperModifiers: GlobalShortcutModifiers =
-        [.control, .option, .command, .shift]
     /// An id block of its own so the shared hotkey handler never collides with
     /// another feature's keys (single tools 10–24, CommandBar 200+, RadialMenu
     /// 1700+).
@@ -50,9 +47,16 @@ final class DockNumberSwitchService: ObservableObject {
         for hotkey in hotkeys { hotkey.unregister() }
         hotkeys.removeAll()
 
+        // The layer the Super key emits: its own configurable modifier set, so a
+        // digit is reached as "Super key + digit" whatever the user narrowed it
+        // to. Reading it here means a change to that preference is picked up on
+        // the re-sync the Super key settings already fire (see SuperKeySettings).
+        let superKeyModifiers = SuperKeySupport.modifiers(
+            from: UserDefaults.standard.string(forKey: DefaultsKey.superKeyModifiers))
+
         var anyFailed = false
         for (index, keyCode) in Self.digitKeyCodes.enumerated() {
-            let shortcut = GlobalShortcut(keyCode: Int64(keyCode), modifiers: Self.hyperModifiers)
+            let shortcut = GlobalShortcut(keyCode: Int64(keyCode), modifiers: superKeyModifiers)
             let hotkey = QuickToolHotkey(id: Self.hotkeyIDBase + UInt32(index))
             let slot = index + 1
             hotkey.onPress = { [weak self] in self?.activate(slot: slot) }
@@ -127,17 +131,21 @@ final class DockNumberSwitchService: ObservableObject {
         guard let children = Self.elementArray(dockElement, kAXChildrenAttribute as String) else {
             return []
         }
+        // Gather tiles from every AXList in tree order, not just the first, the
+        // way DockClickService walks the Dock: today the tiles live in one list,
+        // but if a macOS release ever splits them across lists, stopping at the
+        // first would silently number only part of the Dock.
+        var tiles: [DockNumberSwitchSupport.Tile] = []
         for child in children where Self.stringAttribute(child, kAXRoleAttribute as String) == "AXList" {
             guard let items = Self.elementArray(child, kAXChildrenAttribute as String) else { continue }
-            let tiles = items.map { item in
+            tiles.append(contentsOf: items.map { item in
                 DockNumberSwitchSupport.Tile(
                     subrole: Self.stringAttribute(item, kAXSubroleAttribute as String),
                     url: Self.urlAttribute(item)
                 )
-            }
-            return DockNumberSwitchSupport.applicationURLs(from: tiles)
+            })
         }
-        return []
+        return DockNumberSwitchSupport.applicationURLs(from: tiles)
     }
 
     // MARK: - Dock Accessibility helpers

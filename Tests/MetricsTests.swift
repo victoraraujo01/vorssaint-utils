@@ -4055,6 +4055,8 @@ struct MetricsTests {
                "every configurable shortcut's feature is silenced while recording")
         expect(silenced.contains(.windowLayout),
                "the window layout keys are silenced too, though they have no role")
+        expect(silenced.contains(.dockNumberSwitch),
+               "the Dock number keys have no role, so recording would strand them without this")
         expect(silenced.contains(.finderRename),
                "the scoped Finder key steps aside while its recorder is listening")
         expect(silenced.contains(.switcher) && silenced.contains(.radialMenu)
